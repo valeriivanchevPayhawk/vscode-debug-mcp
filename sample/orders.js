@@ -19,7 +19,8 @@ function computeTotal(items) {
   // and reading .price on undefined throws. Change to `<`.
   for (let i = 0; i <= items.length; i++) {
     const item = items[i];
-    total += item.price * item.qty;
+    total += item.
+    price * item.qty;
   }
   return total;
 }

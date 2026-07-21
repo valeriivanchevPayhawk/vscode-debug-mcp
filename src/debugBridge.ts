@@ -1,5 +1,20 @@
 import * as vscode from "vscode";
 
+const MAX_VALUE_CHARS = 400;
+
+/** Trim very long value strings (e.g. full function source) for readability. */
+function truncateValue(value: unknown): unknown {
+  if (typeof value === "string" && value.length > MAX_VALUE_CHARS) {
+    return `${value.slice(0, MAX_VALUE_CHARS)}… (${value.length} chars)`;
+  }
+  return value;
+}
+
+/** Heuristic: is this variable the ambient global object? */
+function isAmbientGlobal(v: { name?: string; type?: string }): boolean {
+  return v.type === "global" || v.name === "this" || v.name === "globalThis";
+}
+
 /**
  * Snapshot of the most recent `stopped` DAP event for a session — i.e. where
  * execution is currently paused.
@@ -21,6 +36,7 @@ interface OutputLine {
 
 interface SessionMeta {
   session: vscode.DebugSession;
+  parentId?: string;
   output: OutputLine[];
   running: boolean;
   exitCode?: number;
@@ -62,6 +78,7 @@ export class DebugBridge {
   onSessionStart(session: vscode.DebugSession): void {
     this.sessions.set(session.id, {
       session,
+      parentId: session.parentSession?.id,
       output: [],
       running: true,
       terminated: false,
@@ -569,24 +586,33 @@ export class DebugBridge {
       return [];
     }
     const res = await session.customRequest("variables", { variablesReference });
-    const vars = (res?.variables ?? []).slice(0, maxChildren);
+    const all = res?.variables ?? [];
+    const vars = all.slice(0, maxChildren);
     const result: any[] = [];
     for (const v of vars) {
       const entry: any = {
         name: v.name,
-        value: v.value,
+        value: truncateValue(v.value),
         type: v.type,
         variablesReference: v.variablesReference,
       };
-      if (v.variablesReference > 0 && depth > 0) {
+      // Don't auto-recurse into huge ambient objects (e.g. `this` === global in
+      // a top-level Node frame) — it drowns the useful locals. Callers can still
+      // expand them explicitly by passing the variablesReference.
+      if (v.variablesReference > 0 && depth > 0 && !isAmbientGlobal(v)) {
         entry.children = await this.expandRef(
           session,
           v.variablesReference,
           depth - 1,
           maxChildren,
         );
+      } else if (v.variablesReference > 0) {
+        entry.expandable = true;
       }
       result.push(entry);
+    }
+    if (all.length > vars.length) {
+      result.push({ note: `… ${all.length - vars.length} more (raise maxChildren)` });
     }
     return result;
   }
@@ -624,13 +650,38 @@ export class DebugBridge {
   // Output capture / run-and-capture.
   // ---------------------------------------------------------------------------
 
+  /**
+   * Return a session and all of its descendants. js-debug launches a "parent"
+   * session that spawns "child" sessions which do the real work (and emit the
+   * program's stdout/stderr), so callers almost always want the whole tree.
+   */
+  private sessionTree(rootId: string): SessionMeta[] {
+    const out: SessionMeta[] = [];
+    const root = this.sessions.get(rootId);
+    if (root) {
+      out.push(root);
+    }
+    let frontier = [rootId];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const [id, m] of this.sessions) {
+        if (m.parentId && frontier.includes(m.parentId) && !out.includes(m)) {
+          out.push(m);
+          next.push(id);
+        }
+      }
+      frontier = next;
+    }
+    return out;
+  }
+
   getOutput(opts: { sessionId?: string; category?: string; maxLines?: number }) {
     const session = this.resolveSession(opts.sessionId);
-    const meta = this.sessions.get(session.id);
-    if (!meta) {
+    const tree = this.sessionTree(session.id);
+    if (tree.length === 0) {
       return { output: "" };
     }
-    let lines = meta.output;
+    let lines = tree.flatMap((m) => m.output);
     if (opts.category) {
       lines = lines.filter((l) => l.category === opts.category);
     }
@@ -639,9 +690,9 @@ export class DebugBridge {
     }
     return {
       sessionId: session.id,
-      running: meta.running,
-      terminated: meta.terminated,
-      exitCode: meta.exitCode,
+      running: tree.some((m) => m.running),
+      terminated: tree.every((m) => m.terminated),
+      exitCode: tree.map((m) => m.exitCode).find((c) => c != null),
       output: lines.map((l) => l.output).join(""),
     };
   }
@@ -684,14 +735,15 @@ export class DebugBridge {
       meta.terminateWaiters.push(onDone);
     });
 
+    const tree = this.sessionTree(start.sessionId);
     return {
       started: true,
       sessionId: start.sessionId,
       sessionName: start.sessionName,
       terminated,
       timedOut: !terminated,
-      exitCode: meta.exitCode,
-      output: meta.output.map((l) => l.output).join(""),
+      exitCode: tree.map((m) => m.exitCode).find((c) => c != null) ?? meta.exitCode,
+      output: tree.flatMap((m) => m.output).map((l) => l.output).join(""),
     };
   }
 }
