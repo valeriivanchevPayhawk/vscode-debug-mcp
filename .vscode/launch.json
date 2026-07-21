@@ -8,6 +8,14 @@
       "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "npm: build"
+    },
+    {
+      "name": "Debug: sample orders",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/sample/orders.js",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
     }
   ]
 }

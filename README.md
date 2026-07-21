@@ -76,6 +76,13 @@ Claude will then load `vscode-live-debug` when a task calls for runtime debuggin
 
 See `skill/SKILL.md` for the debugging workflow and tool details.
 
+## Validate end-to-end
+
+`sample/orders.js` is a deliberately buggy program with a matching
+"Debug: sample orders" launch config. Follow `sample/WALKTHROUGH.md` for a fixed
+sequence of tool calls that proves breakpoints, stepping, stack, variable
+inspection, and `run_and_capture` all work over MCP.
+
 ## Settings
 
 | Setting | Default | Meaning |
